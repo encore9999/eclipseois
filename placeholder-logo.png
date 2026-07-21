@@ -1,0 +1,208 @@
+'use client'
+
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react'
+import type { ConnectionState, ServerConfig, TrafficSample } from './types'
+import { parseImport, type ImportSummary } from './parse-config'
+
+// ---------------------------------------------------------------------------
+// App-wide store.
+//
+// Holds imported servers, the active connection state, and a rolling traffic
+// buffer. The connect() flow is simulated here — in the native build this is
+// exactly where the Xray / sing-box tunnel adapter would start / stop and
+// stream real byte counters. The rest of the UI never needs to change.
+// ---------------------------------------------------------------------------
+
+const SEED_SUBSCRIPTION = [
+  'vless://8f3a1c9e-4b21-4a0e-9c11-2f9e7a1b0c33@fi.eclipse.net:443?type=grpc&security=reality&sni=cloudflare.com&serviceName=grpc#FI · Helsinki Reality',
+  'trojan://Sup3rS3cret@se.eclipse.net:443?type=ws&security=tls&host=cdn.eclipse.net&path=/ws#SE · Stockholm TLS',
+  'hysteria2://Fast-Pass-2024@ru.eclipse.net:8443?sni=ru.eclipse.net#RU · Moscow Hysteria2',
+  'vless://a1b2c3d4-e5f6-7890-abcd-ef1234567890@de.eclipse.net:443?type=xhttp&security=tls&sni=de.eclipse.net&path=/xh#DE · Frankfurt XHTTP',
+].join('\n')
+
+type Settings = {
+  killSwitch: boolean
+  autoConnect: boolean
+  lanBypass: boolean
+  ipv6: boolean
+  dns: string
+}
+
+type VpnContextValue = {
+  servers: ServerConfig[]
+  activeId: string | null
+  activeServer: ServerConfig | null
+  state: ConnectionState
+  connectedSince: number | null
+  traffic: TrafficSample[]
+  totals: { up: number; down: number }
+  settings: Settings
+  importText: (text: string) => ImportSummary
+  selectServer: (id: string) => void
+  removeServer: (id: string) => void
+  connect: () => void
+  disconnect: () => void
+  toggle: () => void
+  updateSettings: (patch: Partial<Settings>) => void
+}
+
+const VpnContext = createContext<VpnContextValue | null>(null)
+
+export function VpnProvider({ children }: { children: React.ReactNode }) {
+  const [servers, setServers] = useState<ServerConfig[]>(
+    () => parseImport(SEED_SUBSCRIPTION).servers,
+  )
+  const [activeId, setActiveId] = useState<string | null>(() => null)
+  const [state, setState] = useState<ConnectionState>('disconnected')
+  const [connectedSince, setConnectedSince] = useState<number | null>(null)
+  const [traffic, setTraffic] = useState<TrafficSample[]>([])
+  const [totals, setTotals] = useState({ up: 0, down: 0 })
+  const [settings, setSettings] = useState<Settings>({
+    killSwitch: true,
+    autoConnect: false,
+    lanBypass: true,
+    ipv6: false,
+    dns: '1.1.1.1',
+  })
+
+  const tickRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const connectTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Default selection once servers exist.
+  useEffect(() => {
+    setActiveId((cur) => cur ?? servers[0]?.id ?? null)
+  }, [servers])
+
+  const activeServer = useMemo(
+    () => servers.find((s) => s.id === activeId) ?? null,
+    [servers, activeId],
+  )
+
+  const stopTick = useCallback(() => {
+    if (tickRef.current) {
+      clearInterval(tickRef.current)
+      tickRef.current = null
+    }
+  }, [])
+
+  const startTick = useCallback(() => {
+    stopTick()
+    tickRef.current = setInterval(() => {
+      // Simulated throughput: fluctuating up/down in bytes per second.
+      const down = 1.2e6 + Math.random() * 6.5e6
+      const up = 2e5 + Math.random() * 1.4e6
+      setTraffic((prev) => {
+        const next = [...prev, { t: Date.now(), up, down }]
+        return next.slice(-40)
+      })
+      setTotals((prev) => ({ up: prev.up + up, down: prev.down + down }))
+    }, 1000)
+  }, [stopTick])
+
+  const disconnect = useCallback(() => {
+    if (connectTimer.current) clearTimeout(connectTimer.current)
+    stopTick()
+    setState('disconnected')
+    setConnectedSince(null)
+  }, [stopTick])
+
+  const connect = useCallback(() => {
+    if (!activeServer) return
+    setState('connecting')
+    setTraffic([])
+    setTotals({ up: 0, down: 0 })
+    // Simulate tunnel handshake latency.
+    connectTimer.current = setTimeout(() => {
+      setState('connected')
+      setConnectedSince(Date.now())
+      startTick()
+    }, 1200)
+  }, [activeServer, startTick])
+
+  const toggle = useCallback(() => {
+    if (state === 'connected' || state === 'connecting') disconnect()
+    else connect()
+  }, [state, connect, disconnect])
+
+  const importText = useCallback((text: string): ImportSummary => {
+    const summary = parseImport(text)
+    if (summary.servers.length) {
+      setServers((prev) => {
+        const seen = new Set(prev.map((s) => s.raw))
+        const fresh = summary.servers.filter((s) => !seen.has(s.raw))
+        return [...prev, ...fresh]
+      })
+    }
+    return summary
+  }, [])
+
+  const selectServer = useCallback(
+    (id: string) => {
+      const wasConnected = state === 'connected'
+      setActiveId(id)
+      if (wasConnected) {
+        // Re-establish on the newly selected node.
+        disconnect()
+        setTimeout(() => {
+          setActiveId(id)
+          setState('connecting')
+          connectTimer.current = setTimeout(() => {
+            setState('connected')
+            setConnectedSince(Date.now())
+            startTick()
+          }, 1000)
+        }, 150)
+      }
+    },
+    [state, disconnect, startTick],
+  )
+
+  const removeServer = useCallback(
+    (id: string) => {
+      setServers((prev) => prev.filter((s) => s.id !== id))
+      setActiveId((cur) => (cur === id ? null : cur))
+      if (activeId === id) disconnect()
+    },
+    [activeId, disconnect],
+  )
+
+  const updateSettings = useCallback((patch: Partial<Settings>) => {
+    setSettings((prev) => ({ ...prev, ...patch }))
+  }, [])
+
+  useEffect(() => () => stopTick(), [stopTick])
+
+  const value: VpnContextValue = {
+    servers,
+    activeId,
+    activeServer,
+    state,
+    connectedSince,
+    traffic,
+    totals,
+    settings,
+    importText,
+    selectServer,
+    removeServer,
+    connect,
+    disconnect,
+    toggle,
+    updateSettings,
+  }
+
+  return <VpnContext.Provider value={value}>{children}</VpnContext.Provider>
+}
+
+export function useVpn() {
+  const ctx = useContext(VpnContext)
+  if (!ctx) throw new Error('useVpn must be used within VpnProvider')
+  return ctx
+}

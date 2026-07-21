@@ -1,0 +1,226 @@
+import type { Protocol, ServerConfig, Transport } from './types'
+
+// ---------------------------------------------------------------------------
+// Config parsing layer
+//
+// Parses standard share URIs into ServerConfig objects:
+//   vless://uuid@host:port?params#remark
+//   trojan://password@host:port?params#remark
+//   hysteria2://password@host:port?params#remark   (and hy2://)
+//   vmess://<base64 json>
+//
+// Also accepts a "subscription" payload: base64 (or plain text) containing
+// one URI per line. This mirrors the behaviour of clients like v2rayNG /
+// Hiddify so real subscription links can be imported.
+// ---------------------------------------------------------------------------
+
+let idCounter = 0
+function makeId() {
+  idCounter += 1
+  return `srv_${Date.now().toString(36)}_${idCounter}`
+}
+
+function safeAtob(input: string): string {
+  const cleaned = input.replace(/\s+/g, '')
+  // Support URL-safe base64.
+  const normalized = cleaned.replace(/-/g, '+').replace(/_/g, '/')
+  const padded = normalized + '==='.slice((normalized.length + 3) % 4)
+  try {
+    if (typeof atob === 'function') return decodeURIComponent(escape(atob(padded)))
+    return Buffer.from(padded, 'base64').toString('utf-8')
+  } catch {
+    return ''
+  }
+}
+
+// Very small ISO-region guesser from the remark text (flag chips only).
+const REGION_HINTS: Array<[RegExp, string]> = [
+  [/\b(ru|russia|росс|моск|msk)\b/i, 'RU'],
+  [/\b(us|usa|united states|америк)\b/i, 'US'],
+  [/\b(de|germany|герман|frankfurt)\b/i, 'DE'],
+  [/\b(nl|netherlands|нидерл|amsterdam)\b/i, 'NL'],
+  [/\b(fi|finland|финлян|helsinki)\b/i, 'FI'],
+  [/\b(se|sweden|швец|stockholm)\b/i, 'SE'],
+  [/\b(fr|france|франц|paris)\b/i, 'FR'],
+  [/\b(gb|uk|london|британ)\b/i, 'GB'],
+  [/\b(jp|japan|япон|tokyo)\b/i, 'JP'],
+  [/\b(sg|singapore|сингап)\b/i, 'SG'],
+  [/\b(tr|turkey|турц|istanbul)\b/i, 'TR'],
+  [/\b(nl|ae|dubai|эмират)\b/i, 'AE'],
+]
+
+function guessRegion(remark: string): string | undefined {
+  for (const [re, code] of REGION_HINTS) {
+    if (re.test(remark)) return code
+  }
+  return undefined
+}
+
+function normalizeTransport(net?: string | null): Transport {
+  switch ((net || 'tcp').toLowerCase()) {
+    case 'ws':
+    case 'websocket':
+      return 'ws'
+    case 'grpc':
+      return 'grpc'
+    case 'xhttp':
+    case 'splithttp':
+      return 'xhttp'
+    case 'quic':
+      return 'quic'
+    case 'http':
+    case 'h2':
+      return 'http'
+    default:
+      return 'tcp'
+  }
+}
+
+function normalizeSecurity(v?: string | null): ServerConfig['security'] {
+  const s = (v || '').toLowerCase()
+  if (s === 'reality') return 'reality'
+  if (s === 'tls' || s === 'xtls') return 'tls'
+  return 'none'
+}
+
+function pseudoPing(seed: string): number {
+  // Deterministic pseudo latency so the UI is stable across renders.
+  let h = 0
+  for (let i = 0; i < seed.length; i += 1) h = (h * 31 + seed.charCodeAt(i)) >>> 0
+  return 20 + (h % 220)
+}
+
+type ParseResult = { ok: true; server: ServerConfig } | { ok: false; error: string }
+
+function parseStandardUri(uri: string, protocol: Protocol): ParseResult {
+  try {
+    // The URL API handles userinfo@host:port?query#hash cleanly.
+    const url = new URL(uri)
+    const params = url.searchParams
+    const remark = decodeURIComponent(url.hash.replace(/^#/, '')) || url.hostname
+    const port = Number(url.port) || (normalizeSecurity(params.get('security')) !== 'none' ? 443 : 80)
+    const transport = normalizeTransport(params.get('type') || params.get('net'))
+
+    const server: ServerConfig = {
+      id: makeId(),
+      name: remark.trim() || `${protocol.toUpperCase()} ${url.hostname}`,
+      protocol,
+      transport,
+      address: url.hostname,
+      port,
+      credential: decodeURIComponent(url.username || params.get('password') || ''),
+      security: normalizeSecurity(params.get('security')),
+      sni: params.get('sni') || params.get('peer') || undefined,
+      host: params.get('host') || undefined,
+      path: params.get('path') || params.get('serviceName') || undefined,
+      region: guessRegion(remark),
+      pingMs: pseudoPing(uri),
+      raw: uri,
+    }
+
+    if (!server.address) return { ok: false, error: 'Отсутствует адрес сервера' }
+    return { ok: true, server }
+  } catch (e) {
+    return { ok: false, error: `Некорректный ${protocol.toUpperCase()} URI` }
+  }
+}
+
+function parseVmess(uri: string): ParseResult {
+  try {
+    const b64 = uri.replace(/^vmess:\/\//i, '')
+    const json = safeAtob(b64)
+    if (!json) return { ok: false, error: 'Не удалось декодировать VMess' }
+    const o = JSON.parse(json) as Record<string, unknown>
+    const remark = String(o.ps || o.remark || o.add || 'VMess')
+    const transport = normalizeTransport(String(o.net || 'tcp'))
+    const server: ServerConfig = {
+      id: makeId(),
+      name: remark.trim(),
+      protocol: 'vmess',
+      transport,
+      address: String(o.add || ''),
+      port: Number(o.port) || 443,
+      credential: String(o.id || ''),
+      security: normalizeSecurity(String(o.tls || 'none') === 'tls' ? 'tls' : (o.security as string)),
+      sni: (o.sni as string) || (o.host as string) || undefined,
+      host: (o.host as string) || undefined,
+      path: (o.path as string) || undefined,
+      region: guessRegion(remark),
+      pingMs: pseudoPing(uri),
+      raw: uri,
+    }
+    if (!server.address) return { ok: false, error: 'VMess: отсутствует адрес' }
+    return { ok: true, server }
+  } catch {
+    return { ok: false, error: 'Некорректный VMess URI' }
+  }
+}
+
+/** Parse a single share URI line. Returns null for unsupported/empty lines. */
+export function parseUri(line: string): ParseResult | null {
+  const uri = line.trim()
+  if (!uri) return null
+  const lower = uri.toLowerCase()
+
+  if (lower.startsWith('vless://')) return parseStandardUri(uri, 'vless')
+  if (lower.startsWith('trojan://')) return parseStandardUri(uri, 'trojan')
+  if (lower.startsWith('hysteria2://')) return parseStandardUri(uri, 'hysteria2')
+  if (lower.startsWith('hy2://')) return parseStandardUri(uri.replace(/^hy2:\/\//i, 'hysteria2://'), 'hysteria2')
+  if (lower.startsWith('vmess://')) return parseVmess(uri)
+
+  return null
+}
+
+export type ImportSummary = {
+  servers: ServerConfig[]
+  added: number
+  failed: number
+  errors: string[]
+}
+
+/**
+ * Parse pasted text, a single URI, or a base64-encoded subscription blob.
+ * Returns every server it could recover plus a summary of failures.
+ */
+export function parseImport(input: string): ImportSummary {
+  const trimmed = input.trim()
+  const errors: string[] = []
+  const servers: ServerConfig[] = []
+  let failed = 0
+
+  // If the whole blob has no scheme, it may be a base64 subscription.
+  let text = trimmed
+  if (!/[a-z0-9]+:\/\//i.test(trimmed)) {
+    const decoded = safeAtob(trimmed)
+    if (decoded && /[a-z0-9]+:\/\//i.test(decoded)) text = decoded
+  }
+
+  const lines = text.split(/\r?\n/).filter((l) => l.trim().length > 0)
+  for (const line of lines) {
+    const res = parseUri(line)
+    if (!res) continue
+    if (res.ok) servers.push(res.server)
+    else {
+      failed += 1
+      errors.push(res.error)
+    }
+  }
+
+  return { servers, added: servers.length, failed, errors }
+}
+
+export const PROTOCOL_LABELS: Record<Protocol, string> = {
+  vless: 'VLESS',
+  trojan: 'Trojan',
+  hysteria2: 'Hysteria2',
+  vmess: 'VMess',
+}
+
+export const TRANSPORT_LABELS: Record<Transport, string> = {
+  tcp: 'TCP',
+  ws: 'WebSocket',
+  grpc: 'gRPC',
+  xhttp: 'XHTTP',
+  quic: 'QUIC',
+  http: 'HTTP',
+}

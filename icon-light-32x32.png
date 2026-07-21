@@ -1,0 +1,41 @@
+// Core domain types for Eclipse.
+// These describe a parsed VPN server config, decoupled from any specific
+// native tunnel engine (Xray / sing-box). The UI works entirely against
+// these structures; the native core adapter maps them to its own config.
+
+export type Protocol = 'vless' | 'trojan' | 'hysteria2' | 'vmess'
+
+// Transport / network layer that carries the protocol.
+export type Transport = 'tcp' | 'ws' | 'grpc' | 'xhttp' | 'quic' | 'http'
+
+export type ServerConfig = {
+  id: string
+  /** Human-readable label (from the #remark of the URI). */
+  name: string
+  protocol: Protocol
+  transport: Transport
+  address: string
+  port: number
+  /** UUID / password depending on protocol. */
+  credential: string
+  /** TLS / Reality security. */
+  security: 'none' | 'tls' | 'reality'
+  sni?: string
+  /** ws / xhttp path or grpc serviceName. */
+  path?: string
+  host?: string
+  /** ISO country code guessed from the remark, used for the flag chip. */
+  region?: string
+  /** Simulated latency in ms (would be a real ping in the native build). */
+  pingMs?: number
+  /** Raw original URI, kept for re-export. */
+  raw: string
+}
+
+export type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
+
+export type TrafficSample = {
+  t: number
+  up: number // bytes/s
+  down: number // bytes/s
+}
