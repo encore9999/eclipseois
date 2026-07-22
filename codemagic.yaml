@@ -10,16 +10,40 @@ workflows:
       events:
         - push
     scripts:
+      - name: Find and Prepare Project Directory
+        script: |
+          # Ищем, где именно в репозитории лежит файл .xcodeproj
+          PROJECT_PATH=$(find . -name "*.xcodeproj" -print -quit)
+          
+          if [ -z "$PROJECT_PATH" ]; then
+            echo "КРИТИЧЕСКАЯ ОШИБКА: Файл .xcodeproj не найден вообще нигде в репозитории!"
+            echo "Пожалуйста, проверьте, что ваш ИИ действительно создал Xcode проект."
+            exit 1
+          fi
+          
+          # Получаем путь к папке, содержащей проект, и переходим в неё
+          PROJECT_DIR=$(dirname "$PROJECT_PATH")
+          echo "Проект найден в папке: $PROJECT_DIR"
+          
+          # Записываем путь в системный файл окружения, чтобы следующие шаги знали, где работать
+          echo "PROJECT_DIR=$PWD/$PROJECT_DIR" >> $CM_ENV
+          
       - name: Disable Code Signing for Sideloading
         script: |
-          # Отключаем обязательную подпись Xcode, чтобы собрать .ipa на облачном Mac
+          cd "$PROJECT_DIR"
+          # Отключаем обязательную подпись Xcode
           sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' *.xcodeproj/project.pbxproj || true
           sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' *.xcodeproj/project.pbxproj || true
+          
       - name: Build Xcode Project
         script: |
-          # ВНИМАНИЕ: Замените "YourProject" на точное имя вашего .xcodeproj файла (без расширения)
+          cd "$PROJECT_DIR"
+          
+          # Автоматически определяем имя проекта и схемы сборки
           XCODE_PROJECT=$(ls -d *.xcodeproj | head -n 1)
           XCODE_SCHEME=$(basename "$XCODE_PROJECT" .xcodeproj)
+          
+          echo "Собираем проект: $XCODE_PROJECT со схемой: $XCODE_SCHEME"
           
           xcodebuild clean build \
             -project "$XCODE_PROJECT" \
@@ -27,12 +51,17 @@ workflows:
             -configuration Release \
             -sdk iphoneos \
             CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGNING_REQUIRED=NO
+            CODE_SIGNING_REQUIRED=NO \
+            CONFIGURATION_BUILD_DIR="$PWD/build-output"
+            
       - name: Pack to IPA
         script: |
-          # Собираем скомпилированные файлы в итоговый .ipa архив
+          cd "$PROJECT_DIR"
+          
+          # Создаем структуру .ipa из скомпилированного .app
           mkdir -p Payload
-          cp -r build/Release-iphoneos/*.app Payload/
-          zip -r YourVPNApp.ipa Payload/
+          cp -r build-output/*.app Payload/
+          zip -r ../../YourVPNApp.ipa Payload/
+          
     artifacts:
       - "*.ipa"
