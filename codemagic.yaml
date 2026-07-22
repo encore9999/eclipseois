@@ -117,7 +117,7 @@ workflows:
           </plist>
           EOF
 
-          # 6. Исправленная конфигурация проекта для XcodeGen под Ad-Hoc подпись
+          # 6. Конфигурация XcodeGen под архитектуру Simulator iOS
           cat << 'EOF' > project.yml
           name: EclipseVPN
           options:
@@ -131,9 +131,6 @@ workflows:
               settings:
                 INFOPLIST_FILE: App/Info.plist
                 PRODUCT_BUNDLE_IDENTIFIER: com.eclipse.EclipseVPN
-                CODE_SIGNING_ALLOWED: YES
-                CODE_SIGNING_REQUIRED: NO
-                CODE_SIGN_IDENTITY: "-"
               dependencies:
                 - target: TunnelExtension
             TunnelExtension:
@@ -145,35 +142,33 @@ workflows:
                 INFOPLIST_FILE: Tunnel/Info.plist
                 CODE_SIGN_ENTITLEMENTS: Tunnel/Tunnel.entitlements
                 PRODUCT_BUNDLE_IDENTIFIER: com.eclipse.EclipseVPN.TunnelExtension
-                CODE_SIGNING_ALLOWED: YES
-                CODE_SIGNING_REQUIRED: NO
-                CODE_SIGN_IDENTITY: "-"
           EOF
 
       - name: Generate .xcodeproj File
         script: |
           xcodegen generate
 
-      - name: Build Xcode Project
+      - name: Build Xcode Project for Simulator Architecture
         script: |
-          echo "=== Запуск Ad-Hoc компиляции ==="
-          # Запускаем сборку с использованием псевдо-подписи Ad-Hoc ("-")
+          echo "=== Запуск компиляции под Simulator SDK (arm64) ==="
+          # Меняем -sdk на iphonesimulator и принудительно выставляем Ad-Hoc подпись
           xcodebuild clean build \
             -project "EclipseVPN.xcodeproj" \
             -scheme "EclipseVPN" \
             -configuration Release \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
+            -sdk iphonesimulator \
+            -destination "generic/platform=iOS Simulator" \
             CODE_SIGNING_ALLOWED=YES \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="-" \
             CONFIGURATION_BUILD_DIR="$PWD/build-output"
 
-      - name: Package to IPA
+      - name: Package Simulator App to TrollStore IPA
         script: |
-          echo "=== Сборка готового .ipa ==="
+          echo "=== Упаковка приложения .app в .ipa пакет ==="
           mkdir -p Payload
-          cp -r build-output/EclipseVPN.app Payload/
+          # Копируем полученный бинарник .app из папки сборки симулятора
+          cp -r build-output/*.app Payload/ 2>/dev/null || cp -r build-output/Release-iphonesimulator/*.app Payload/ || true
           zip -r EclipseXrayVPN.ipa Payload/
           
     artifacts:
