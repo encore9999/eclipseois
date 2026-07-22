@@ -11,13 +11,13 @@ workflows:
     scripts:
       - name: Clean Repository and Install Tools
         script: |
-          echo "=== Очистка репозитория ==?"
+          echo "=== Очистка репозитория ==="
           rm -rf components.json next.config.mjs package.json tsconfig.json postcss.config.mjs page.tsx layout.tsx connect-screen.tsx settings-screen.tsx import-screen.tsx bottom-nav.tsx button.tsx protocol-badge.tsx utils.ts parse-config.ts format.ts pnpm-lock.yaml apple-icon.png eclipse-vpn-client.zip download build-output
           brew install xcodegen
 
       - name: Generate Core Files and Manifests
         script: |
-          echo "=== Создание структуры проекта ==?"
+          echo "=== Создание структуры проекта ==="
           mkdir -p App Tunnel
           
           # 1. Основной UI код приложения
@@ -117,7 +117,7 @@ workflows:
           </plist>
           EOF
 
-          # 6. Конфигурация проекта для XcodeGen
+          # 6. Исправленная конфигурация проекта для XcodeGen под Ad-Hoc подпись
           cat << 'EOF' > project.yml
           name: EclipseVPN
           options:
@@ -131,6 +131,9 @@ workflows:
               settings:
                 INFOPLIST_FILE: App/Info.plist
                 PRODUCT_BUNDLE_IDENTIFIER: com.eclipse.EclipseVPN
+                CODE_SIGNING_ALLOWED: YES
+                CODE_SIGNING_REQUIRED: NO
+                CODE_SIGN_IDENTITY: "-"
               dependencies:
                 - target: TunnelExtension
             TunnelExtension:
@@ -142,33 +145,28 @@ workflows:
                 INFOPLIST_FILE: Tunnel/Info.plist
                 CODE_SIGN_ENTITLEMENTS: Tunnel/Tunnel.entitlements
                 PRODUCT_BUNDLE_IDENTIFIER: com.eclipse.EclipseVPN.TunnelExtension
+                CODE_SIGNING_ALLOWED: YES
+                CODE_SIGNING_REQUIRED: NO
+                CODE_SIGN_IDENTITY: "-"
           EOF
 
       - name: Generate .xcodeproj File
         script: |
           xcodegen generate
 
-      - name: Patch Framework Signing for TrollStore
-        script: |
-          # Принудительно отключаем подпись во всем проекте и всех его целях
-          sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' EclipseVPN.xcodeproj/project.pbxproj || true
-          sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' EclipseVPN.xcodeproj/project.pbxproj || true
-          sed -i '' 's/CODE_SIGN_IDENTITY = "Apple Development"/CODE_SIGN_IDENTITY = ""/g' EclipseVPN.xcodeproj/project.pbxproj || true
-
       - name: Build Xcode Project
         script: |
-          echo "=== Запуск компиляции нативного VPN ==="
-          # Добавляем параметр -destination, чтобы принудительно связать схемы с архитектурой iPhone
+          echo "=== Запуск Ad-Hoc компиляции ==="
+          # Запускаем сборку с использованием псевдо-подписи Ad-Hoc ("-")
           xcodebuild clean build \
             -project "EclipseVPN.xcodeproj" \
             -scheme "EclipseVPN" \
             -configuration Release \
             -sdk iphoneos \
             -destination "generic/platform=iOS" \
-            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_ALLOWED=YES \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="" \
-            PROVISIONING_PROFILE_SPECIFIER="" \
+            CODE_SIGN_IDENTITY="-" \
             CONFIGURATION_BUILD_DIR="$PWD/build-output"
 
       - name: Package to IPA
