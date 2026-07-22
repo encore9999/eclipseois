@@ -12,14 +12,14 @@ workflows:
       - name: Purge Web Files and Prepare Structure
         script: |
           echo "=== Очистка старого репозитория ==="
-          rm -rf components.json next.config.mjs package.json tsconfig.json postcss.config.mjs page.tsx layout.tsx connect-screen.tsx settings-screen.tsx import-screen.tsx bottom-nav.tsx button.tsx protocol-badge.tsx utils.ts parse-config.ts format.ts pnpm-lock.yaml apple-icon.png eclipse-vpn-client.zip download build-output Project.xcodeproj project.yml App Tunnel
+          rm -rf components.json next.config.mjs package.json tsconfig.json postcss.config.mjs page.tsx layout.tsx connect-screen.tsx settings-screen.tsx import-screen.tsx bottom-nav.tsx button.tsx protocol-badge.tsx utils.ts parse-config.ts format.ts pnpm-lock.yaml apple-icon.png eclipse-vpn-client.zip download build-output Project.xcodeproj project.yml App Tunnel main.swift app.swift
           
           # Создаем структуру папок приложения
           mkdir -p build-output/EclipseVPN.app
 
       - name: Create Info.plist Manifests
         script: |
-          echo "=== Генерация системных манифестов ==="
+          echo "=== Gen системных манифестов ==="
           
           # Создаем Info.plist для приложения
           cat << 'EOF' > build-output/EclipseVPN.app/Info.plist
@@ -52,7 +52,8 @@ workflows:
       - name: Write Application Swift Code
         script: |
           echo "=== Написание исходного кода ==="
-          cat << 'EOF' > main.swift
+          # Меняем имя файла на app.swift, чтобы убрать конфликт с верхнеуровневым кодом main
+          cat << 'EOF' > app.swift
           import SwiftUI
 
           struct MainView: View {
@@ -102,11 +103,12 @@ workflows:
           # Получаем путь к мобильному SDK iOS
           SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
           
-          # Компилируем код напрямую под процессор iPhone (arm64)
+          # Компилируем код напрямую под процессор iPhone (arm64) с флагом -parse-as-library
           swiftc -sdk "$SDK_PATH" \
                  -target arm64-apple-ios16.0 \
+                 -parse-as-library \
                  -O -whole-module-optimization \
-                 main.swift \
+                 app.swift \
                  -o build-output/EclipseVPN.app/EclipseVPN
 
       - name: Package Application to TrollStore IPA
