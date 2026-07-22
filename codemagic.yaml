@@ -1,7 +1,7 @@
 workflows:
   ios-xray-vpn:
     name: Generate and Build iOS Xray VPN
-    max_build_duration: 30
+    max_build_duration: 15
     instance_type: mac_mini_m1
     environment:
       xcode: latest
@@ -9,44 +9,20 @@ workflows:
       events:
         - push
     scripts:
-      - name: Clean Repository and Install Tools
+      - name: Purge Web Files and Prepare Structure
         script: |
-          echo "=== Очистка репозитория ==="
-          rm -rf components.json next.config.mjs package.json tsconfig.json postcss.config.mjs page.tsx layout.tsx connect-screen.tsx settings-screen.tsx import-screen.tsx bottom-nav.tsx button.tsx protocol-badge.tsx utils.ts parse-config.ts format.ts pnpm-lock.yaml apple-icon.png eclipse-vpn-client.zip download build-output
-          brew install xcodegen
-
-      - name: Generate Core Files and Manifests
-        script: |
-          echo "=== Создание структуры проекта ==="
-          mkdir -p App Tunnel
+          echo "=== Очистка старого репозитория ==="
+          rm -rf components.json next.config.mjs package.json tsconfig.json postcss.config.mjs page.tsx layout.tsx connect-screen.tsx settings-screen.tsx import-screen.tsx bottom-nav.tsx button.tsx protocol-badge.tsx utils.ts parse-config.ts format.ts pnpm-lock.yaml apple-icon.png eclipse-vpn-client.zip download build-output Project.xcodeproj project.yml App Tunnel
           
-          # 1. Основной UI код приложения
-          cat << 'EOF' > App/main.swift
-          import SwiftUI
+          # Создаем структуру папок приложения
+          mkdir -p build-output/EclipseVPN.app
 
-          @main
-          struct VPNApp: App {
-              var body: some Scene {
-                  WindowGroup {
-                      VStack {
-                          Text("Eclipse Xray VPN")
-                              .font(.largeTitle)
-                              .bold()
-                          Button("Запустить туннель Xray") {
-                              print("Инициализация VPN...")
-                          }
-                          .padding()
-                          .background(Color.blue)
-                          .foregroundColor(.white)
-                          .cornerRadius(10)
-                      }
-                  }
-              }
-          }
-          EOF
-
-          # 2. Info.plist для Основного приложения
-          cat << 'EOF' > App/Info.plist
+      - name: Create Info.plist Manifests
+        script: |
+          echo "=== Генерация системных манифестов ==="
+          
+          # Создаем Info.plist для приложения
+          cat << 'EOF' > build-output/EclipseVPN.app/Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://apple.com">
           <plist version="1.0">
@@ -55,121 +31,90 @@ workflows:
               <string>com.eclipse.EclipseVPN</string>
               <key>CFBundleExecutable</key>
               <string>EclipseVPN</string>
+              <key>CFBundleName</key>
+              <string>EclipseVPN</string>
               <key>CFBundlePackageType</key>
               <string>APPL</string>
               <key>CFBundleShortVersionString</key>
               <string>1.0</string>
               <key>CFBundleVersion</key>
               <string>1</string>
-          </dict>
-          </plist>
-          EOF
-
-          # 3. Исходный код системного туннеля VPN
-          cat << 'EOF' > Tunnel/TunnelProvider.swift
-          import NetworkExtension
-
-          class TunnelProvider: NEPacketTunnelProvider {
-              override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
-                  completionHandler(nil)
-              }
-              
-              override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
-                  completionHandler()
-              }
-          }
-          EOF
-
-          # 4. Info.plist для регистрации VPN-плагина
-          cat << 'EOF' > Tunnel/Info.plist
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://apple.com">
-          <plist version="1.0">
-          <dict>
-              <key>CFBundleIdentifier</key>
-              <string>com.eclipse.EclipseVPN.TunnelExtension</string>
-              <key>CFBundleExecutable</key>
-              <string>TunnelExtension</string>
-              <key>CFBundlePackageType</key>
-              <string>XPC!</string>
-              <key>NSExtension</key>
-              <dict>
-                  <key>NSExtensionPointIdentifier</key>
-                  <string>com.apple.networkextension.packet-tunnel</string>
-                  <key>NSExtensionPrincipalClass</key>
-                  <string>TunnelExtension.TunnelProvider</string>
-              </dict>
-          </dict>
-          </plist>
-          EOF
-
-          # 5. Файл прав (Entitlements) для туннеля
-          cat << 'EOF' > Tunnel/Tunnel.entitlements
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://apple.com">
-          <plist version="1.0">
-          <dict>
-              <key>com.apple.developer.networking.networkextension</key>
+              <key>MinimumOSVersion</key>
+              <string>16.0</string>
+              <key>UIDeviceFamily</key>
               <array>
-                  <string>packet-tunnel-provider</string>
+                  <integer>1</integer>
               </array>
           </dict>
           </plist>
           EOF
 
-          # 6. Конфигурация XcodeGen под архитектуру Simulator iOS
-          cat << 'EOF' > project.yml
-          name: EclipseVPN
-          options:
-            bundleIdPrefix: com.eclipse
-          targets:
-            EclipseVPN:
-              type: application
-              platform: iOS
-              deploymentTarget: "16.0"
-              sources: [App]
-              settings:
-                INFOPLIST_FILE: App/Info.plist
-                PRODUCT_BUNDLE_IDENTIFIER: com.eclipse.EclipseVPN
-              dependencies:
-                - target: TunnelExtension
-            TunnelExtension:
-              type: app-extension
-              platform: iOS
-              deploymentTarget: "16.0"
-              sources: [Tunnel]
-              settings:
-                INFOPLIST_FILE: Tunnel/Info.plist
-                CODE_SIGN_ENTITLEMENTS: Tunnel/Tunnel.entitlements
-                PRODUCT_BUNDLE_IDENTIFIER: com.eclipse.EclipseVPN.TunnelExtension
+      - name: Write Application Swift Code
+        script: |
+          echo "=== Написание исходного кода ==="
+          cat << 'EOF' > main.swift
+          import SwiftUI
+
+          struct MainView: View {
+              var body: some View {
+                  VStack(spacing: 20) {
+                      Text("Eclipse Xray VPN")
+                          .font(.largeTitle)
+                          .bold()
+                          .foregroundColor(.primary)
+                      
+                      Text("Статус: Отключено")
+                          .font(.headline)
+                          .foregroundColor(.secondary)
+                      
+                      Button(action: {
+                          print("Старт туннеля Xray...")
+                      }) {
+                          Text("Подключить VPN")
+                              .font(.title3)
+                              .bold()
+                              .foregroundColor(.white)
+                              .padding()
+                              .frame(maxWidth: .infinity)
+                              .background(Color.blue)
+                              .cornerRadius(12)
+                      }
+                      .padding(.horizontal, 40)
+                  }
+                  .padding()
+              }
+          }
+
+          @main
+          struct VPNApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      MainView()
+                  }
+              }
+          }
           EOF
 
-      - name: Generate .xcodeproj File
+      - name: Compile Swift Code to Native Arm64 Binary
         script: |
-          xcodegen generate
+          echo "=== Прямая компиляция Swift в обход Xcode ==="
+          
+          # Получаем путь к мобильному SDK iOS
+          SDK_PATH=$(xcrun --sdk iphoneos --show-sdk-path)
+          
+          # Компилируем код напрямую под процессор iPhone (arm64)
+          swiftc -sdk "$SDK_PATH" \
+                 -target arm64-apple-ios16.0 \
+                 -O -whole-module-optimization \
+                 main.swift \
+                 -o build-output/EclipseVPN.app/EclipseVPN
 
-      - name: Build Xcode Project for Simulator Architecture
+      - name: Package Application to TrollStore IPA
         script: |
-          echo "=== Запуск компиляции под Simulator SDK (arm64) ==="
-          # Меняем -sdk на iphonesimulator и принудительно выставляем Ad-Hoc подпись
-          xcodebuild clean build \
-            -project "EclipseVPN.xcodeproj" \
-            -scheme "EclipseVPN" \
-            -configuration Release \
-            -sdk iphonesimulator \
-            -destination "generic/platform=iOS Simulator" \
-            CODE_SIGNING_ALLOWED=YES \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGN_IDENTITY="-" \
-            CONFIGURATION_BUILD_DIR="$PWD/build-output"
-
-      - name: Package Simulator App to TrollStore IPA
-        script: |
-          echo "=== Упаковка приложения .app в .ipa пакет ==="
+          echo "=== Финальная сборка .ipa ==="
           mkdir -p Payload
-          # Копируем полученный бинарник .app из папки сборки симулятора
-          cp -r build-output/*.app Payload/ 2>/dev/null || cp -r build-output/Release-iphonesimulator/*.app Payload/ || true
-          zip -r EclipseXrayVPN.ipa Payload/
+          cp -r build-output/EclipseVPN.app Payload/
+          zip -qy -r EclipseXrayVPN.ipa Payload
           
     artifacts:
       - "*.ipa"
