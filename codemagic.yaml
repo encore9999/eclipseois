@@ -1,67 +1,70 @@
 workflows:
-  ios-vpn-build:
-    name: Build iOS VPN App
+  ios-xray-vpn:
+    name: Generate and Build iOS Xray VPN
     max_build_duration: 30
     instance_type: mac_mini_m1
     environment:
       xcode: latest
-      cocoapods: default
     triggering:
       events:
         - push
     scripts:
-      - name: Find and Prepare Project Directory
+      - name: Generate Native iOS VPN Project Structure
         script: |
-          # Ищем, где именно в репозитории лежит файл .xcodeproj
-          PROJECT_PATH=$(find . -name "*.xcodeproj" -print -quit)
+          echo "=== Очистка старых веб-файлов ==="
+          rm -rf components.json next.config.mjs package.json tsconfig.json postcss.config.mjs page.tsx layout.tsx connect-screen.tsx settings-screen.tsx import-screen.tsx bottom-nav.tsx button.tsx protocol-badge.tsx utils.ts parse-config.ts format.ts
           
-          if [ -z "$PROJECT_PATH" ]; then
-            echo "КРИТИЧЕСКАЯ ОШИБКА: Файл .xcodeproj не найден вообще нигде в репозитории!"
-            echo "Пожалуйста, проверьте, что ваш ИИ действительно создал Xcode проект."
-            exit 1
-          fi
-          
-          # Получаем путь к папке, содержащей проект, и переходим в неё
-          PROJECT_DIR=$(dirname "$PROJECT_PATH")
-          echo "Проект найден в папке: $PROJECT_DIR"
-          
-          # Записываем путь в системный файл окружения, чтобы следующие шаги знали, где работать
-          echo "PROJECT_DIR=$PWD/$PROJECT_DIR" >> $CM_ENV
-          
-      - name: Disable Code Signing for Sideloading
+          echo "=== Скачивание и развертывание Swift-клиента с Xray ==="
+          # Скачиваем легковесный базовый шаблон iOS VPN (App + NetworkExtension)
+          curl -L -o ios_template.zip https://github.com
+          unzip ios_template.zip
+          mv clever-vpn-client-apple-main/* .
+          rm -rf clever-vpn-client-apple-main ios_template.zip
+
+      - name: Inject SwiftyXrayKit Dependencies
         script: |
-          cd "$PROJECT_DIR"
-          # Отключаем обязательную подпись Xcode
-          sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' *.xcodeproj/project.pbxproj || true
-          sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' *.xcodeproj/project.pbxproj || true
-          
-      - name: Build Xcode Project
+          # Подключаем актуальное Swift-совместимое ядро Xray Core для iOS
+          echo "=== Настройка Swift Package Manager для Xray ==="
+          cat << 'EOF' > Package.swift
+          // swift-tools-version:5.9
+          import PackageDescription
+          let package = Package(
+              name: "VPNXrayDeps",
+              dependencies: [
+                  .package(url: "https://github.com", from: "2.0.0")
+              ]
+          )
+          EOF
+
+      - name: Patch Xcode for Sideloading (TrollStore)
         script: |
-          cd "$PROJECT_DIR"
+          echo "=== Отключение обязательной платной подписи Apple ==="
+          # Находим сгенерированный проект и отключаем CODE_SIGNING для сборки под TrollStore
+          XCODE_PROJ=$(ls -d *.xcodeproj | head -n 1)
+          sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' "$XCODE_PROJ/project.pbxproj" || true
+          sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' "$XCODE_PROJ/project.pbxproj" || true
+
+      - name: Build iOS IPA
+        script: |
+          XCODE_PROJ=$(ls -d *.xcodeproj | head -n 1)
+          XCODE_SCHEME=$(basename "$XCODE_PROJ" .xcodeproj)
           
-          # Автоматически определяем имя проекта и схемы сборки
-          XCODE_PROJECT=$(ls -d *.xcodeproj | head -n 1)
-          XCODE_SCHEME=$(basename "$XCODE_PROJECT" .xcodeproj)
-          
-          echo "Собираем проект: $XCODE_PROJECT со схемой: $XCODE_SCHEME"
-          
+          echo "=== Запуск компиляции Xcode проекта ==="
           xcodebuild clean build \
-            -project "$XCODE_PROJECT" \
+            -project "$XCODE_PROJ" \
             -scheme "$XCODE_SCHEME" \
             -configuration Release \
             -sdk iphoneos \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PWD/build-output"
-            
-      - name: Pack to IPA
+
+      - name: Create IPA Package
         script: |
-          cd "$PROJECT_DIR"
-          
-          # Создаем структуру .ipa из скомпилированного .app
+          echo "=== Упаковка в .IPA ==="
           mkdir -p Payload
-          cp -r build-output/*.app Payload/
-          zip -r ../../YourVPNApp.ipa Payload/
+          cp -r build-output/*.app Payload/ 2>/dev/null || cp -r build-output/Release-iphoneos/*.app Payload/
+          zip -r EclipseXrayVPN.ipa Payload/
           
     artifacts:
       - "*.ipa"
