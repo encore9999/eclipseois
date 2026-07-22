@@ -11,15 +11,13 @@ workflows:
     scripts:
       - name: Clean Repository and Install Tools
         script: |
-          echo "=== Очистка репозитория ==="
-          rm -rf components.json next.config.mjs package.json tsconfig.json postcss.config.mjs page.tsx layout.tsx connect-screen.tsx settings-screen.tsx import-screen.tsx bottom-nav.tsx button.tsx protocol-badge.tsx utils.ts parse-config.ts format.ts pnpm-lock.yaml apple-icon.png eclipse-vpn-client.zip download
-          
-          echo "=== Установка XcodeGen ==="
+          echo "=== Очистка репозитория ==?"
+          rm -rf components.json next.config.mjs package.json tsconfig.json postcss.config.mjs page.tsx layout.tsx connect-screen.tsx settings-screen.tsx import-screen.tsx bottom-nav.tsx button.tsx protocol-badge.tsx utils.ts parse-config.ts format.ts pnpm-lock.yaml apple-icon.png eclipse-vpn-client.zip download build-output
           brew install xcodegen
 
-      - name: Generate Source Code and Plists
+      - name: Generate Core Files and Manifests
         script: |
-          echo "=== Создание структуры проекта ==="
+          echo "=== Создание структуры проекта ==?"
           mkdir -p App Tunnel
           
           # 1. Основной UI код приложения
@@ -47,13 +45,32 @@ workflows:
           }
           EOF
 
-          # 2. Исходный код системного туннеля VPN
+          # 2. Info.plist для Основного приложения
+          cat << 'EOF' > App/Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://apple.com">
+          <plist version="1.0">
+          <dict>
+              <key>CFBundleIdentifier</key>
+              <string>com.eclipse.EclipseVPN</string>
+              <key>CFBundleExecutable</key>
+              <string>EclipseVPN</string>
+              <key>CFBundlePackageType</key>
+              <string>APPL</string>
+              <key>CFBundleShortVersionString</key>
+              <string>1.0</string>
+              <key>CFBundleVersion</key>
+              <string>1</string>
+          </dict>
+          </plist>
+          EOF
+
+          # 3. Исходный код системного туннеля VPN
           cat << 'EOF' > Tunnel/TunnelProvider.swift
           import NetworkExtension
 
           class TunnelProvider: NEPacketTunnelProvider {
               override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
-                  // Здесь запускается ядро Xray Core (LibXray / SwiftyXrayKit)
                   completionHandler(nil)
               }
               
@@ -63,12 +80,18 @@ workflows:
           }
           EOF
 
-          # 3. Файл манифеста Info.plist для регистрации VPN-плагина в iOS
+          # 4. Info.plist для регистрации VPN-плагина
           cat << 'EOF' > Tunnel/Info.plist
           <?xml version="1.0" encoding="UTF-8"?>
           <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://apple.com">
           <plist version="1.0">
           <dict>
+              <key>CFBundleIdentifier</key>
+              <string>com.eclipse.EclipseVPN.TunnelExtension</string>
+              <key>CFBundleExecutable</key>
+              <string>TunnelExtension</string>
+              <key>CFBundlePackageType</key>
+              <string>XPC!</string>
               <key>NSExtension</key>
               <dict>
                   <key>NSExtensionPointIdentifier</key>
@@ -80,7 +103,21 @@ workflows:
           </plist>
           EOF
 
-          # 4. Исправленная конфигурация проекта для XcodeGen
+          # 5. Файл прав (Entitlements) для туннеля
+          cat << 'EOF' > Tunnel/Tunnel.entitlements
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://apple.com">
+          <plist version="1.0">
+          <dict>
+              <key>com.apple.developer.networking.networkextension</key>
+              <array>
+                  <string>packet-tunnel-provider</string>
+              </array>
+          </dict>
+          </plist>
+          EOF
+
+          # 6. Конфигурация проекта для XcodeGen
           cat << 'EOF' > project.yml
           name: EclipseVPN
           options:
@@ -91,6 +128,9 @@ workflows:
               platform: iOS
               deploymentTarget: "16.0"
               sources: [App]
+              settings:
+                INFOPLIST_FILE: App/Info.plist
+                PRODUCT_BUNDLE_IDENTIFIER: com.eclipse.EclipseVPN
               dependencies:
                 - target: TunnelExtension
             TunnelExtension:
@@ -99,30 +139,36 @@ workflows:
               deploymentTarget: "16.0"
               sources: [Tunnel]
               settings:
-                PRODUCT_BUNDLE_IDENTIFIER: com.eclipse.TunnelExtension
+                INFOPLIST_FILE: Tunnel/Info.plist
+                CODE_SIGN_ENTITLEMENTS: Tunnel/Tunnel.entitlements
+                PRODUCT_BUNDLE_IDENTIFIER: com.eclipse.EclipseVPN.TunnelExtension
           EOF
 
       - name: Generate .xcodeproj File
         script: |
-          echo "=== Генерация файла проекта ==="
           xcodegen generate
 
       - name: Patch Framework Signing for TrollStore
         script: |
-          echo "=== Отключение подписи Xcode ==="
+          # Принудительно отключаем подпись во всем проекте и всех его целях
           sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' EclipseVPN.xcodeproj/project.pbxproj || true
           sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' EclipseVPN.xcodeproj/project.pbxproj || true
+          sed -i '' 's/CODE_SIGN_IDENTITY = "Apple Development"/CODE_SIGN_IDENTITY = ""/g' EclipseVPN.xcodeproj/project.pbxproj || true
 
       - name: Build Xcode Project
         script: |
-          echo "=== Запуск компиляции нативного VPN ==="
+          echo "=== Запуск компиляции ==="
+          # Добавляем принудительный флаг архитектуры arm64 для iPhone и отключаем валидацию подписи на этапе сборки
           xcodebuild clean build \
             -project "EclipseVPN.xcodeproj" \
             -scheme "EclipseVPN" \
             -configuration Release \
             -sdk iphoneos \
+            -arch arm64 \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            PROVISIONING_PROFILE_SPECIFIER="" \
             CONFIGURATION_BUILD_DIR="$PWD/build-output"
 
       - name: Package to IPA
