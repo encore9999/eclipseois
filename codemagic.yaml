@@ -157,14 +157,14 @@ workflows:
 
       - name: Build Xcode Project
         script: |
-          echo "=== Запуск компиляции ==="
-          # Добавляем принудительный флаг архитектуры arm64 для iPhone и отключаем валидацию подписи на этапе сборки
+          echo "=== Запуск компиляции нативного VPN ==="
+          # Добавляем параметр -destination, чтобы принудительно связать схемы с архитектурой iPhone
           xcodebuild clean build \
             -project "EclipseVPN.xcodeproj" \
             -scheme "EclipseVPN" \
             -configuration Release \
             -sdk iphoneos \
-            -arch arm64 \
+            -destination "generic/platform=iOS" \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CODE_SIGN_IDENTITY="" \
