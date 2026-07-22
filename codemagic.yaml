@@ -9,76 +9,109 @@ workflows:
       events:
         - push
     scripts:
-      - name: Deploy iOS VPN Project Structure
+      - name: Clean Repository and Install Tools
         script: |
-          echo "=== Очистка репозитория ==="
-          rm -rf components.json next.config.mjs package.json tsconfig.json postcss.config.mjs page.tsx layout.tsx connect-screen.tsx settings-screen.tsx import-screen.tsx bottom-nav.tsx button.tsx protocol-badge.tsx utils.ts parse-config.ts format.ts
+          echo "=== Полная очистка веб-файлов ==="
+          rm -rf components.json next.config.mjs package.json tsconfig.json postcss.config.mjs page.tsx layout.tsx connect-screen.tsx settings-screen.tsx import-screen.tsx bottom-nav.tsx button.tsx protocol-badge.tsx utils.ts parse-config.ts format.ts pnpm-lock.yaml apple-icon.png eclipse-vpn-client.zip download
           
-          echo "=== Загрузка исходного кода iOS клиента ==="
-          curl -L -o ios_template.zip https://github.com
-          unzip -q ios_template.zip
-          
-          # Перемещаем всё содержимое наружу в корень репозитория
-          cp -R clever-vpn-client-apple-main/ . || true
-          rm -rf clever-vpn-client-apple-main ios_template.zip
+          echo "=== Установка генератора проектов Xcode ==="
+          brew install xcodegen
 
-      - name: Dynamically Find Xcode Project
+      - name: Generate Code and Project Definition
         script: |
-          echo "=== Поиск файла .xcodeproj в проекте ==="
-          # Ищем путь к файлу проекта Xcode по всему репозиторию
-          XCODE_PROJECT_PATH=$(find . -name "*.xcodeproj" -print -quit)
+          echo "=== Создание исходного кода приложения ==="
+          mkdir -p App Tunnel
           
-          if [ -z "$XCODE_PROJECT_PATH" ]; then
-            echo "ОШИБКА: Проект Xcode (.xcodeproj) не найден после распаковки шаблона!"
-            exit 1
-          fi
-          
-          # Извлекаем имя файла и путь к папке
-          XCODE_PROJECT_FILE=$(basename "$XCODE_PROJECT_PATH")
-          XCODE_PROJECT_DIR=$(dirname "$XCODE_PROJECT_PATH")
-          XCODE_SCHEME_NAME=$(basename "$XCODE_PROJECT_FILE" .xcodeproj)
-          
-          echo "Найден проект: $XCODE_PROJECT_FILE в папке: $XCODE_PROJECT_DIR"
-          
-          # Экспортируем переменные окружения для следующих шагов сборки
-          echo "TARGET_PROJ_DIR=$PWD/$XCODE_PROJECT_DIR" >> $CM_ENV
-          echo "TARGET_PROJ_FILE=$XCODE_PROJECT_FILE" >> $CM_ENV
-          echo "TARGET_SCHEME=$XCODE_SCHEME_NAME" >> $CM_ENV
+          # 1. Код основного приложения
+          cat << 'EOF' > App/main.swift
+          import SwiftUI
 
-      - name: Configure and Patch Xcode for Sideloading
-        script: |
-          cd "$TARGET_PROJ_DIR"
-          echo "=== Отключение проверки подписи Apple для TrollStore ==="
-          sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' "$TARGET_PROJ_FILE/project.pbxproj" || true
-          sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' "$TARGET_PROJ_FILE/project.pbxproj" || true
+          @main
+          struct VPNApp: App {
+              var body: some Scene {
+                  WindowGroup {
+                      VStack {
+                          Text("Eclipse Xray VPN")
+                              .font(.largeTitle)
+                              .bold()
+                          Button("Подключить VPN") {
+                              print("Запуск туннеля...")
+                          }
+                          .padding()
+                          .background(Color.blue)
+                          .foregroundColor(.white)
+                          .cornerRadius(10)
+                      }
+                  }
+              }
+          }
+          EOF
 
-      - name: Compile Xcode Project
+          # 2. Код системного VPN-туннеля
+          cat << 'EOF' > Tunnel/TunnelProvider.swift
+          import NetworkExtension
+
+          class TunnelProvider: NEPacketTunnelProvider {
+              override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
+                  // Здесь запускается ядро Xray core
+                  completionHandler(nil)
+              }
+              
+              override func stopTunnel(with reason: NEProviderStopReason, completionHandler: @escaping () -> Void) {
+                  completionHandler()
+              }
+          }
+          EOF
+
+          # 3. Файл конфигурации проекта для XcodeGen
+          cat << 'EOF' > project.yml
+          name: EclipseVPN
+          options:
+            bundleIdPrefix: com.eclipse
+          targets:
+            EclipseVPN:
+              type: application
+              platform: iOS
+              deploymentTarget: "16.0"
+              sources: [App]
+              dependencies:
+                - target: TunnelExtension
+            TunnelExtension:
+              type: app-extension.packet-tunnel-provider
+              platform: iOS
+              deploymentTarget: "16.0"
+              sources: [Tunnel]
+          EOF
+
+      - name: Generate .xcodeproj File
         script: |
-          cd "$TARGET_PROJ_DIR"
-          echo "=== Сборка iOS приложения с параметрами ==="
-          echo "Папка: $TARGET_PROJ_DIR | Проект: $TARGET_PROJ_FILE | Схема: $TARGET_SCHEME"
-          
+          echo "=== Генерация файла проекта .xcodeproj ==="
+          xcodegen generate
+
+      - name: Patch for TrollStore Sideloading
+        script: |
+          echo "=== Отключение обязательной платной подписи Apple ==="
+          sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' EclipseVPN.xcodeproj/project.pbxproj || true
+          sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' EclipseVPN.xcodeproj/project.pbxproj || true
+
+      - name: Build Xcode Project
+        script: |
+          echo "=== Компиляция созданного проекта ==="
           xcodebuild clean build \
-            -project "$TARGET_PROJ_FILE" \
-            -scheme "$TARGET_SCHEME" \
+            -project "EclipseVPN.xcodeproj" \
+            -scheme "EclipseVPN" \
             -configuration Release \
             -sdk iphoneos \
             CODE_SIGNING_ALLOWED=NO \
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PWD/build-output"
 
-      - name: Package Application to IPA
+      - name: Export to IPA Package
         script: |
-          cd "$TARGET_PROJ_DIR"
-          echo "=== Упаковка скомпилированных файлов в .IPA архив ==="
+          echo "=== Упаковка бинарных файлов в .ipa ==="
           mkdir -p Payload
-          
-          # Копируем скомпилированное приложение .app в структуру архива
-          cp -r build-output/*.app Payload/ 2>/dev/null || cp -r build-output/Release-iphoneos/*.app Payload/ || true
-          
-          # Архивируем в итоговый файл .ipa и перемещаем в корень для Codemagic
+          cp -r build-output/EclipseVPN.app Payload/
           zip -r EclipseXrayVPN.ipa Payload/
-          mv EclipseXrayVPN.ipa ../../ 2>/dev/null || mv EclipseXrayVPN.ipa ../ || true
           
     artifacts:
       - "*.ipa"
