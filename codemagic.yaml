@@ -11,18 +11,18 @@ workflows:
     scripts:
       - name: Clean Repository and Install Tools
         script: |
-          echo "=== Полная очистка веб-файлов ==="
+          echo "=== Очистка репозитория ==="
           rm -rf components.json next.config.mjs package.json tsconfig.json postcss.config.mjs page.tsx layout.tsx connect-screen.tsx settings-screen.tsx import-screen.tsx bottom-nav.tsx button.tsx protocol-badge.tsx utils.ts parse-config.ts format.ts pnpm-lock.yaml apple-icon.png eclipse-vpn-client.zip download
           
-          echo "=== Установка генератора проектов Xcode ==="
+          echo "=== Установка XcodeGen ==="
           brew install xcodegen
 
-      - name: Generate Code and Project Definition
+      - name: Generate Source Code and Plists
         script: |
-          echo "=== Создание исходного кода приложения ==="
+          echo "=== Создание структуры проекта ==="
           mkdir -p App Tunnel
           
-          # 1. Код основного приложения
+          # 1. Основной UI код приложения
           cat << 'EOF' > App/main.swift
           import SwiftUI
 
@@ -34,8 +34,8 @@ workflows:
                           Text("Eclipse Xray VPN")
                               .font(.largeTitle)
                               .bold()
-                          Button("Подключить VPN") {
-                              print("Запуск туннеля...")
+                          Button("Запустить туннель Xray") {
+                              print("Инициализация VPN...")
                           }
                           .padding()
                           .background(Color.blue)
@@ -47,13 +47,13 @@ workflows:
           }
           EOF
 
-          # 2. Код системного VPN-туннеля
+          # 2. Исходный код системного туннеля VPN
           cat << 'EOF' > Tunnel/TunnelProvider.swift
           import NetworkExtension
 
           class TunnelProvider: NEPacketTunnelProvider {
               override func startTunnel(options: [String : NSObject]?, completionHandler: @escaping (Error?) -> Void) {
-                  // Здесь запускается ядро Xray core
+                  // Здесь запускается ядро Xray Core (LibXray / SwiftyXrayKit)
                   completionHandler(nil)
               }
               
@@ -63,7 +63,24 @@ workflows:
           }
           EOF
 
-          # 3. Файл конфигурации проекта для XcodeGen
+          # 3. Файл манифеста Info.plist для регистрации VPN-плагина в iOS
+          cat << 'EOF' > Tunnel/Info.plist
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://apple.com">
+          <plist version="1.0">
+          <dict>
+              <key>NSExtension</key>
+              <dict>
+                  <key>NSExtensionPointIdentifier</key>
+                  <string>com.apple.networkextension.packet-tunnel</string>
+                  <key>NSExtensionPrincipalClass</key>
+                  <string>TunnelExtension.TunnelProvider</string>
+              </dict>
+          </dict>
+          </plist>
+          EOF
+
+          # 4. Исправленная конфигурация проекта для XcodeGen
           cat << 'EOF' > project.yml
           name: EclipseVPN
           options:
@@ -77,26 +94,28 @@ workflows:
               dependencies:
                 - target: TunnelExtension
             TunnelExtension:
-              type: app-extension.packet-tunnel-provider
+              type: app-extension
               platform: iOS
               deploymentTarget: "16.0"
               sources: [Tunnel]
+              settings:
+                PRODUCT_BUNDLE_IDENTIFIER: com.eclipse.TunnelExtension
           EOF
 
       - name: Generate .xcodeproj File
         script: |
-          echo "=== Генерация файла проекта .xcodeproj ==="
+          echo "=== Генерация файла проекта ==="
           xcodegen generate
 
-      - name: Patch for TrollStore Sideloading
+      - name: Patch Framework Signing for TrollStore
         script: |
-          echo "=== Отключение обязательной платной подписи Apple ==="
+          echo "=== Отключение подписи Xcode ==="
           sed -i '' 's/CODE_SIGNING_ALLOWED = YES/CODE_SIGNING_ALLOWED = NO/g' EclipseVPN.xcodeproj/project.pbxproj || true
           sed -i '' 's/CODE_SIGNING_REQUIRED = YES/CODE_SIGNING_REQUIRED = NO/g' EclipseVPN.xcodeproj/project.pbxproj || true
 
       - name: Build Xcode Project
         script: |
-          echo "=== Компиляция созданного проекта ==="
+          echo "=== Запуск компиляции нативного VPN ==="
           xcodebuild clean build \
             -project "EclipseVPN.xcodeproj" \
             -scheme "EclipseVPN" \
@@ -106,9 +125,9 @@ workflows:
             CODE_SIGNING_REQUIRED=NO \
             CONFIGURATION_BUILD_DIR="$PWD/build-output"
 
-      - name: Export to IPA Package
+      - name: Package to IPA
         script: |
-          echo "=== Упаковка бинарных файлов в .ipa ==="
+          echo "=== Сборка готового .ipa ==="
           mkdir -p Payload
           cp -r build-output/EclipseVPN.app Payload/
           zip -r EclipseXrayVPN.ipa Payload/
